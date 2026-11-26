@@ -1,0 +1,35 @@
+{
+  "name": "@dsh-prism/dsh-mesh-node",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "!dist/*.test.*",
+    "!dist/*.tsbuildinfo",
+    "!dist/*probe.*"
+  ],
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": "0.2.3-alpha.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.2.0-alpha.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.3-alpha.2",
+    "@dsh-prism/dsh-orchestrator": "0.1.0",
+    "@deepseek-ai/dsh-home-paths": "0.2.3-alpha.2"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}
