@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-mesh-node
+      name: '@dsh-prism/dsh-mesh-node'
+      config:
+        nodeId: local

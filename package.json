@@ -1,6 +1,6 @@
 {
   "name": "@dsh-prism/dsh-mesh-node",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,7 +10,8 @@
       "import": "./dist/index.js"
     },
     "./locale/*.json": "./locale/*.json",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "dist/",
@@ -19,7 +20,8 @@
     "!dist/*probe.*",
     "locale/*.json",
     "icon.svg",
-    "README.zh_CN.md"
+    "README.zh_CN.md",
+    "cordis.patch.yml"
   ],
   "engines": {
     "node": ">=24.0.0",
@@ -31,7 +33,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.2.0-alpha.1",
     "@deepseek-ai/dsh-host-webserver": "0.2.3-alpha.2",
-    "@dsh-prism/dsh-orchestrator": "0.1.0",
+    "@dsh-prism/dsh-orchestrator": "^0.1.0",
     "@deepseek-ai/dsh-home-paths": "0.2.3-alpha.2"
   },
   "scripts": {
@@ -45,5 +47,10 @@
   "devDependencies": {
     "@types/node": "24.10.1",
     "typescript": "6.0.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }
