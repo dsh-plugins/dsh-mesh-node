@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "プリズム Mesh ノード",
+    "description": "接続先端末を認証し、リモート DSH セッションをサブエージェントとして実行します。"
+  },
+  "messages": {
+    "duplicate": "Mesh ノード ID が重複しています",
+    "credential": "各受信 Mesh ノードには一意な ID と認証情報が必要です",
+    "unknown": "不明な Mesh ノードです",
+    "url": "Mesh ピアの URL にはオリジンを指定してください",
+    "https": "デバイス間の Mesh 接続には HTTPS を使用します",
+    "tooLarge": "Mesh のペイロードが大きすぎます",
+    "destination": "Mesh の宛先が無効です",
+    "remoteFailed": "リモートターンに失敗しました"
+  }
+}

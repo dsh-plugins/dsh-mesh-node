@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "title": "棱镜 Mesh 节点",
+    "description": "认证对端设备，将远程 DSH 会话作为子代理执行。",
+    "detail": "README.zh_CN.md"
+  },
+  "messages": {
+    "duplicate": "Mesh 节点 ID 重复",
+    "credential": "每个入站节点需要唯一的 ID 和凭据",
+    "unknown": "找不到 Mesh 节点",
+    "url": "Mesh 对端 URL 必须是源地址",
+    "https": "跨设备 Mesh 连接需要 HTTPS",
+    "tooLarge": "Mesh 数据超出大小限制",
+    "destination": "无效的 Mesh 目标节点",
+    "remoteFailed": "远程会话轮次失败"
+  }
+}

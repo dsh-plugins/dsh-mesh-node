@@ -1,32 +1,36 @@
+<div align="center">
+
+<img src="icon.svg" width="256" height="256" alt="dsh-mesh-node icon">
+
 # dsh-mesh-node
-将「远程设备上的 DSH 实例」封装成标准的 DSH Subagent Provider。这样对 L1/L2 而言，派发任务到另一台机器和在本地拉起一个子智能体调用的是完全相同的工具接口。
 
-## 节点配置
+**Let Prism run a task on the device that has the project, using the same delegation controls as a local task.**
 
-棱镜（Prism）的编排插件按节点注册标准 DSH Subagent Provider，名称为 `prism-<nodeId>`。每次派发返回工作节点实际创建或恢复的 DSH Session ID。连接通过 `POST /prism/mesh/v1` 复用 DSH Web 监听端口，控制端发起出站请求并接收执行端的工具调用。执行端无需回连控制端。
+English | [简体中文](README.zh_CN.md)
 
-在控制端的 `mesh` 配置中列出可派发的节点。
+</div>
 
-```json
-{
-  "nodeId": "hub",
-  "peers": [
-    {"id": "worker", "url": "https://worker.example.org", "tokenEnv": "PRISM_WORKER_TOKEN"}
-  ]
-}
+## Set up Prism
+
+Use Node.js 24.9 or later, npm, Git and credentials with read access to the five private plugin repositories. The checkout script places matching plugins and launcher files in a local `runtime/` directory. Run subsequent installation, configuration and launch commands there. The public guide is available without signing in. To use the example models, configure your DeepSeek credentials in DSH or set the `DEEPSEEK_API_KEY` environment variable. [Installation guide](https://prism.dsh-plug.in/)
+
+```sh
+git clone https://github.com/dsh-plugins/dsh-prism.git
+cd dsh-prism
+node scripts/checkout.mjs
+cd runtime
+npm ci
+npm run build
+npm start
 ```
 
-在工作节点配置允许接入的节点和项目，双方在各自的环境变量中设置该链路的同一个随机凭据。不同入站节点使用独立凭据。跨机使用 HTTPS，本机回环地址可使用 HTTP。将面向控制端的域名加入工作节点 DSH 的受信任主机配置。
+## Connect a second device
 
-```json
-{
-  "nodeId": "worker",
-  "incoming": [
-    {"id": "hub", "tokenEnv": "PRISM_WORKER_TOKEN", "projects": ["atlas"]}
-  ]
-}
-```
+1. Install Prism on both devices and give each its own `mesh.nodeId` and DSH data directory.
+2. On the coordinating device, add the worker to `mesh.peers` with its node ID, HTTPS URL and the name of the environment variable holding the link token.
+3. On the worker, add the coordinator to `mesh.incoming`. Set the same link token on both devices and list the project IDs the coordinator may request.
+4. In both project registries, identify the project by the same ID and assign it to the worker node. Register the real local directory on the worker. Configure that node’s models and project permissions, then start both hosts.
 
-两端注册相同的项目 ID 和工作节点 ID，工作节点的注册表解析本机物理路径并检查用户访问权限。模型 ID 和编排工具名按工作节点的分层配置解析。L2 可授予的执行权限保存在工作节点，L3 启动时核对直接父会话、用户、项目、物理路径以及工具权限。远程 L1 仅能绑定其接入配置与执行节点配置共同指定的默认项目。每个逻辑会话按调用节点隔离。
+Open the coordinator’s usual chat and ask about the registered project. Its task card and read-only record are available in the same conversation. The technical reference includes matching configuration examples for both nodes.
 
-`stateDirectory` 可指定存放节点绑定和权限记录的目录，默认为 `$DSH_HOME/data/prism/mesh`。只读会话查询走同一条经身份验证的链路。
+[Prism documentation](https://prism.dsh-plug.in/) · [Technical reference](docs/TECH.md)

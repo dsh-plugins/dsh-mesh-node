@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "Prism-Mesh-Knoten",
+    "description": "Authentifiziert Partnergeräte und führt entfernte DSH-Sitzungen als Unteragenten aus."
+  },
+  "messages": {
+    "duplicate": "Doppelte Mesh-Knoten-ID",
+    "credential": "Jeder eingehende Mesh-Knoten benötigt eine eindeutige ID und eigene Zugangsdaten",
+    "unknown": "Unbekannter Mesh-Knoten",
+    "url": "Die URL eines Mesh-Partners muss eine Origin sein",
+    "https": "Mesh verwendet HTTPS zwischen Geräten",
+    "tooLarge": "Mesh-Nutzlast zu groß",
+    "destination": "Ungültiges Mesh-Ziel",
+    "remoteFailed": "Entfernter Verarbeitungsschritt fehlgeschlagen"
+  }
+}

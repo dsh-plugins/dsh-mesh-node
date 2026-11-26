@@ -1,3 +1,4 @@
+import { messages } from './messages.js'
 import { randomUUID } from 'node:crypto'
 import type { AgentTools, SessionRunner, TraceEntry, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
 import { maxBody, MeshError, peerUrl, record, string, wireTarget, type OutboundPeer } from './protocol.js'
@@ -12,7 +13,7 @@ export class MeshRunner implements SessionRunner {
 
   private async rpc(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const body = JSON.stringify(payload)
-    if (Buffer.byteLength(body) > maxBody) throw new Error('Mesh payload too large')
+    if (Buffer.byteLength(body) > maxBody) throw new Error(messages.tooLarge)
     for (let attempt = 0; ; attempt++) {
       const deadline = AbortSignal.timeout(25_000)
       try {
@@ -46,7 +47,7 @@ export class MeshRunner implements SessionRunner {
   }
 
   private target(spec: TurnSpec) {
-    if (spec.workspace.nodeId !== this.peer.id) throw new Error('Invalid Mesh destination')
+    if (spec.workspace.nodeId !== this.peer.id) throw new Error(messages.destination)
     return wireTarget(spec)
   }
 
@@ -65,7 +66,7 @@ export class MeshRunner implements SessionRunner {
           onReady?.(sessionId)
         }
         if (state.phase === 'done') return
-        if (state.phase !== 'running' || !Array.isArray(state.calls)) throw new Error('Remote turn failed')
+        if (state.phase !== 'running' || !Array.isArray(state.calls)) throw new Error(messages.remoteFailed)
         await Promise.all(state.calls.map(async raw => {
           const call = record(raw)
           const name = string(call.name)

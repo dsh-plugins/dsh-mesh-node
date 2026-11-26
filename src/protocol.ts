@@ -1,3 +1,4 @@
+import { messages } from './messages.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
@@ -70,11 +71,11 @@ export function authenticated(expected: Buffer, authorization?: string): boolean
 export function peerUrl(url: string): URL {
   const parsed = new URL(url)
   if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
-    throw new Error('Mesh peer URL must be an origin')
+    throw new Error(messages.url)
   }
   const local = ['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname)
   if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) {
-    throw new Error('Mesh uses HTTPS between devices')
+    throw new Error(messages.https)
   }
   return new URL(endpoint, parsed)
 }

@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "title": "Prism Mesh node",
+    "description": "Authenticate peer devices and run remote DSH sessions as subagents.",
+    "detail": "README.md"
+  },
+  "messages": {
+    "duplicate": "Duplicate Mesh node ID",
+    "credential": "Each incoming Mesh node requires a unique ID and credential",
+    "unknown": "Unknown Mesh node",
+    "url": "Mesh peer URL must be an origin",
+    "https": "Mesh uses HTTPS between devices",
+    "tooLarge": "Mesh payload too large",
+    "destination": "Invalid Mesh destination",
+    "remoteFailed": "Remote turn failed"
+  }
+}

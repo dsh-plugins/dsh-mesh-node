@@ -1,3 +1,4 @@
+import { messages } from './messages.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -30,7 +31,7 @@ export class MeshNode {
     this.nodeId = string(config.nodeId, 128)
     for (const peer of config.peers ?? []) {
       string(peer.id, 128)
-      if (peer.id === this.nodeId || this.peers.has(peer.id)) throw new Error('Duplicate Mesh node ID')
+      if (peer.id === this.nodeId || this.peers.has(peer.id)) throw new Error(messages.duplicate)
       this.peers.set(peer.id, new MeshRunner(this.nodeId, peer, token(peer.tokenEnv)))
     }
     const hashes = new Set<string>()
@@ -39,7 +40,7 @@ export class MeshNode {
       names(peer.projects)
       const hash = credentialHash(token(peer.tokenEnv))
       if (peer.id === this.nodeId || this.incoming.has(peer.id) || hashes.has(hash.toString('hex'))) {
-        throw new Error('Each incoming Mesh node requires a unique ID and credential')
+        throw new Error(messages.credential)
       }
       hashes.add(hash.toString('hex'))
       this.incoming.set(peer.id, {peer, hash})
@@ -50,7 +51,7 @@ export class MeshNode {
 
   runnerFor(nodeId: string): MeshRunner {
     const runner = this.peers.get(nodeId)
-    if (!runner) throw new Error('Unknown Mesh node')
+    if (!runner) throw new Error(messages.unknown)
     return runner
   }
 

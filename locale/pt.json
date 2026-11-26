@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "Nó Mesh do Prism",
+    "description": "Autentica dispositivos pares e executa sessões DSH remotas como subagentes."
+  },
+  "messages": {
+    "duplicate": "ID de nó Mesh duplicado",
+    "credential": "Cada nó Mesh de entrada exige um ID e uma credencial únicos",
+    "unknown": "Nó Mesh desconhecido",
+    "url": "A URL do par Mesh deve ser uma origem",
+    "https": "O Mesh usa HTTPS entre dispositivos",
+    "tooLarge": "Dados do Mesh muito grandes",
+    "destination": "Destino Mesh inválido",
+    "remoteFailed": "Falha no turno remoto"
+  }
+}

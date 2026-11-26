@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "Nœud Mesh Prism",
+    "description": "Authentifie les appareils pairs et exécute des sessions DSH distantes comme sous-agents."
+  },
+  "messages": {
+    "duplicate": "Identifiant de nœud Mesh en double",
+    "credential": "Chaque nœud Mesh entrant doit avoir un identifiant et des identifiants d’accès uniques",
+    "unknown": "Nœud Mesh inconnu",
+    "url": "L’URL du pair Mesh doit être une origine",
+    "https": "Mesh utilise HTTPS entre appareils",
+    "tooLarge": "Données Mesh trop volumineuses",
+    "destination": "Destination Mesh non valide",
+    "remoteFailed": "Échec du tour distant"
+  }
+}
