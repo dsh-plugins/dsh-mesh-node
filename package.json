@@ -1,5 +1,6 @@
 {
   "name": "@dsh-prism/dsh-mesh-node",
+  "description": "Delegate Prism tasks to the device that hosts each project and return progress to the coordinating host.",
   "version": "0.1.1",
   "type": "module",
   "main": "./dist/index.js",
