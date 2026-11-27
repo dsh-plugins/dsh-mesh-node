@@ -159,7 +159,33 @@ test('Room messages go directly to the addressed worker and retain origin proof 
     ...planner, bindingId: 'sender-agent', workspace: { ...planner.workspace, nodeId: 'sender' }, room, depth: 1, maxDepth: 2,
   }, 'Start', { definitions: [peerTool], invoke: async () => assert.fail('Transport forwarded the peer tool to the hub') })
   assert.deepEqual(received, ['工程进度'])
+  await assert.rejects(hub.runnerFor('sender').run({
+    ...planner, bindingId: 'sender-agent', workspace: { ...planner.workspace, nodeId: 'sender' },
+    room: { ...room, coordinatorNode: 'receiver' }, depth: 1, maxDepth: 2,
+  }, 'Different delegating peer', { definitions: [peerTool], invoke: async () => {} }), { status: 403 })
   await assert.rejects(sender.peerSend({ ...members[1], agentId: 'unrelated' }, {
     room, messageId: 'denied', senderAgentId: 'sender-agent', text: 'denied', proof: sender.sign('denied'),
+  }), { status: 403 })
+})
+
+test('worker depth ceilings hide further dispatch and are enforced on later remote turns', { timeout: 25_000 }, async t => {
+  const dispatch = { ...tool, name: 'dispatch_executor' }
+  const { runner } = await pair(t, {
+    async run(spec, _text, tools, _signal, ready) {
+      assert.equal(spec.layer, 'L2')
+      assert.equal(spec.maxDepth, 1)
+      assert.deepEqual(tools.definitions, [])
+      ready('bounded-session')
+    },
+  }, {
+    authorize(spec) {
+      return { ...spec, workspace: { ...spec.workspace, cwd: '/worker/p' },
+        ...(spec.layer === 'L2' && { maxDepth: 1 }) }
+    },
+    definitionsFor: layer => layer === 'L2' ? [dispatch] : [],
+  })
+  await runner.run({ ...planner, depth: 1, maxDepth: 2 }, 'limited', { definitions: [dispatch], invoke: async () => {} })
+  await assert.rejects(runner.run({ ...worker, depth: 2, maxDepth: 2 }, 'growth', {
+    definitions: [], invoke: async () => {},
   }), { status: 403 })
 })

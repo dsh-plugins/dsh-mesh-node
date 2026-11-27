@@ -244,6 +244,9 @@ export class MeshWorker {
     if (op === 'start') {
       const target = parseTarget(data.target, this.nodeId)
       if (!peer.projects?.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')
+      if (target.room && target.room.coordinatorNode !== peer.id) {
+        throw new MeshError(403, 'Mesh Room coordinator must be the delegating peer')
+      }
       let logical: MeshTurnSpec
       try { logical = services.authorize(target) }
       catch { throw new MeshError(403, 'Delegation denied') }
@@ -256,8 +259,11 @@ export class MeshWorker {
       const runKey = digest([peer.id, string(data.runId)])
       const text = string(data.text, 1_000_000)
       const allowed = names(data.tools)
-      const definitions = services.definitionsFor(spec.layer).filter(d => allowed.includes(d.name))
-      if (allowed.length !== definitions.length) throw new MeshError(403, 'Invalid tool delegation')
+      const requested = services.definitionsFor(spec.layer).filter(d => allowed.includes(d.name))
+      if (allowed.length !== requested.length) throw new MeshError(403, 'Invalid tool delegation')
+      const definitions = spec.layer === 'L2' && spec.maxDepth === 1
+        ? requested.filter(tool => tool.name !== 'dispatch_executor')
+        : requested
       const fingerprint = digest([target, text, allowed])
       const current = this.turns.get(runKey)
       if (current && current.fingerprint !== fingerprint) throw new MeshError(409, 'Conflicting turn')
