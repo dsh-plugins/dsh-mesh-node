@@ -38,13 +38,14 @@
   },
   "scripts": {
     "build": "tsc -b tsconfig.release.json",
-    "test": "node --test test/mesh.test.mjs"
+    "test": "node --test test/mesh.test.mjs test/pairing.test.mjs test/turn.test.mjs"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dsh-plugins/dsh-mesh-node.git"
   },
   "devDependencies": {
+    "@dsh-plugin/dsh-loader": "2.0.0-dev.45752173879",
     "@types/node": "24.10.1",
     "@types/ws": "8.18.2",
     "typescript": "6.0.3"
@@ -55,6 +56,8 @@
     }
   },
   "dependencies": {
+    "lemon-tls": "0.12.2",
+    "turn-server": "0.10.0",
     "werift": "0.29.0",
     "ws": "8.23.0"
   },
