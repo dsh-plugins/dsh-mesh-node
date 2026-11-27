@@ -27,10 +27,10 @@ npm start
 ## Connect a second device
 
 1. Install Prism on both devices and give each its own `mesh.nodeId` and DSH data directory.
-2. On the coordinating device, add the worker to `mesh.peers` with its node ID, HTTPS URL and the name of the environment variable holding the link token.
-3. On the worker, add the coordinator to `mesh.incoming`. Set the same link token on both devices and list the project IDs the coordinator may request.
-4. In both project registries, identify the project by the same ID and assign it to the worker node. Register the real local directory on the worker. Configure that node’s models and project permissions, then start both hosts.
+2. Generate an Ed25519 identity for each device. Register their public keys with a reachable WSS signaling server and give each device the other device's public key in `mesh.peers`.
+3. On the worker, list the local project IDs the coordinator may access in that peer's `projects` field. Register the actual project directories, models and permissions on the worker.
+4. Configure `mesh.webrtc` on both devices, including any STUN and TURN servers required by your network, then start both hosts.
 
-Open the coordinator’s usual chat and ask about the registered project. Its task card and read-only record are available in the same conversation. The technical reference includes matching configuration examples for both nodes.
+Open the coordinator’s usual chat and ask about a shared project. Follow progress in the task card and open the worker’s DSH workspace to view the session history. Upgrading from HTTP Mesh requires replacing the URL, link token and `incoming` configuration on both devices. The technical reference includes the signaling and device configurations.
 
 [Prism documentation](https://prism.dsh-plug.in/) · [Technical reference](docs/TECH.md)
