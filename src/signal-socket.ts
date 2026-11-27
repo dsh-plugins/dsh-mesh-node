@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import WebSocket from 'ws'
 import type { MeshIdentity } from './identity.js'
+import { decodeRevocation, revocationData } from './pairing-protocol.js'
 import { decodeSignal, isConnectionId, object, signalData, signalingLimit, signInData } from './signaling-protocol.js'
 import type { SignalKind, SignalPacket } from './signaling-protocol.js'
 
@@ -25,7 +26,8 @@ export class SignalSocket {
   private readonly ca?: Buffer
 
   constructor(private readonly nodeId: string, private readonly url: URL, private readonly identity: MeshIdentity,
-    private readonly onPacket: (packet: SignalPacket) => void, caFile?: string) {
+    private readonly onPacket: (packet: SignalPacket) => void, caFile?: string,
+    private readonly onPeerRevoked?: (peerId: string, pairId: string) => void) {
     if (caFile !== undefined) {
       this.ca = readFileSync(caFile)
     }
@@ -66,6 +68,11 @@ export class SignalSocket {
         } else {
           socket.terminate()
         }
+        return
+      }
+      const revoked = this.onPeerRevoked && decodeRevocation(value)
+      if (revoked?.peerId === this.nodeId && this.identity.verify(revoked.nodeId, revocationData(revoked), revoked.signature)) {
+        this.onPeerRevoked?.(revoked.nodeId, revoked.pairId)
         return
       }
       const packet = decodeSignal(value)

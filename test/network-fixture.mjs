@@ -6,16 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createSignalingServer } from '../dist/signaling.js'
 
-export async function meshNetwork(t, grants, ice = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'prism-webrtc-'))
-  const cleanup = []
-  t.after(async () => {
-    try {
-      await Promise.all(cleanup.map(close => close()))
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
+export async function meshCertificate(dir) {
   let openssl = process.env.PRISM_TEST_OPENSSL
   if (!openssl) {
     if (process.platform === 'win32') {
@@ -30,6 +21,20 @@ export async function meshNetwork(t, grants, ice = {}) {
   execFileSync(openssl, ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
     '-out', cert, '-keyout', key], { stdio: 'ignore', windowsHide: true })
+  return { cert, tls: { cert: await readFile(cert), key: await readFile(key) } }
+}
+
+export async function meshNetwork(t, grants, ice = {}) {
+  const dir = await mkdtemp(join(tmpdir(), 'prism-webrtc-'))
+  const cleanup = []
+  t.after(async () => {
+    try {
+      await Promise.all(cleanup.map(close => close()))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+  const { cert, tls } = await meshCertificate(dir)
   const pins = {}
   const privateKeys = {}
   const env = {}
@@ -41,7 +46,7 @@ export async function meshNetwork(t, grants, ice = {}) {
     process.env[privateKeys[nodeId]] = env[privateKeys[nodeId]]
   }
   const signal = createSignalingServer({
-    tls: { cert: await readFile(cert), key: await readFile(key) },
+    tls,
     nodes: pins,
   })
   signal.server.listen(0, '127.0.0.1')
