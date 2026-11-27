@@ -4,19 +4,47 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing stable tag to publish (leave empty to build only)'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-release-${{ github.ref }}
+  group: npm-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
+      - name: Select the source
+        id: source
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          tag="$REQUESTED_TAG"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ -z "$tag" ]]; then
+            printf 'ref=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          elif [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'ref=refs/tags/%s\ntag=%s\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo 'Expected a stable version tag'
+            exit 1
+          fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.source.outputs.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: '24'
@@ -24,34 +52,21 @@ jobs:
       - run: npm run build
       - run: npm test
       - name: Pack the tested package
+        env:
+          RELEASE_TAG: ${{ steps.source.outputs.tag }}
         run: |
+          git_head="$(git rev-parse HEAD)"
+          npm pkg set "gitHead=$git_head"
           mkdir "$RUNNER_TEMP/npm-package"
           npm pack --pack-destination "$RUNNER_TEMP/npm-package"
           mv "$RUNNER_TEMP"/npm-package/*.tgz "$RUNNER_TEMP/release.tgz"
-          tar -xzf "$RUNNER_TEMP/release.tgz" -C "$RUNNER_TEMP/npm-package"
-          cd "$RUNNER_TEMP/npm-package/package"
-          node -e "require('node:fs').accessSync(require('./package.json').dsh.bundle.patch)"
-      - uses: actions/upload-artifact@v6
-        with:
-          name: npm-package
-          path: ${{ runner.temp }}/release.tgz
-          if-no-files-found: error
-
-  publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v7
-        with:
-          name: npm-package
-      - uses: actions/setup-node@v6.4.0
-        with:
-          node-version: '24'
-      - name: Verify the release tag
-        run: |
-          tar -xOf release.tgz package/package.json > package.json
-          test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
-      - run: npm publish release.tgz --access public --registry https://registry.npmjs.org
+          tar -xOf "$RUNNER_TEMP/release.tgz" package/package.json > "$RUNNER_TEMP/release.json"
+          test "$git_head" = "$(node -p 'require(process.argv[1]).gitHead' "$RUNNER_TEMP/release.json")"
+          patch="$(node -p 'require(process.argv[1]).dsh.bundle.patch.replace(/^\.\//, "")' "$RUNNER_TEMP/release.json")"
+          tar -tf "$RUNNER_TEMP/release.tgz" "package/$patch"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            test "$RELEASE_TAG" = "v$(node -p 'require(process.argv[1]).version' "$RUNNER_TEMP/release.json")"
+          fi
+      - name: Publish the tested package
+        if: steps.source.outputs.tag != ''
+        run: npm publish "$RUNNER_TEMP/release.tgz" --tag latest --access public --registry https://registry.npmjs.org
