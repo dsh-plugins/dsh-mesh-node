@@ -1,12 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
 import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { MeshNode } from '../dist/index.js'
+import { meshNetwork } from './network-fixture.mjs'
 
 const tool = {name: 'send_parent', description: 'Report', parameters: {type: 'object'}}
 const planner = {
@@ -16,18 +12,10 @@ const planner = {
 }
 const worker = {...planner, layer: 'L3', bindingId: 'child', parentBindingId: 'plan', allowedTools: ['read']}
 
-async function pair(t, runner) {
-  const dir = await mkdtemp(join(tmpdir(), 'prism-mesh-'))
-  const env = 'DSH_PRISM_TEST_' + randomUUID().replaceAll('-', '')
-  process.env[env] = randomUUID()
-  const node = new MeshNode({nodeId: 'worker', stateDirectory: dir, incoming: [
-    {id: 'hub', tokenEnv: env, projects: ['p','q']},
-  ]})
-  const server = createServer((req, res) => node.handle(req, res))
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const url = 'http://127.0.0.1:' + server.address().port
-  const hub = new MeshNode({nodeId: 'hub', peers: [{id: 'worker', tokenEnv: env, url}]})
+async function pair(t, runner, ice) {
+  const network = await meshNetwork(t, { hub: { worker: [] }, worker: { hub: ['p', 'q'] } }, ice)
+  const node = new MeshNode(network.config('worker'))
+  const hub = new MeshNode(network.config('hub'))
   node.attach({
     runner,
     authorize(spec) {
@@ -38,18 +26,12 @@ async function pair(t, runner) {
     },
     definitionsFor: () => [tool],
   })
-  t.after(async () => {
-    delete process.env[env]
-    await Promise.all([node.close(), hub.close()])
-    await new Promise(resolve => server.close(resolve))
-    await rm(dir, {recursive:true, force:true})
-  })
-  return {runner:hub.runnerFor('worker'), url}
+  network.cleanup(() => Promise.all([node.close(), hub.close()]))
+  return { runner: hub.runnerFor('worker'), hub, node }
 }
 
-test('two nodes transfer formal session identity, explicit tool calls and read-only history', async t => {
-  const sessions = new Map()
-  const {runner, url} = await pair(t, {
+test('WebRTC preserves native session identity, tool callbacks, lineage and project permission', { timeout: 25_000 }, async t => {
+  const {runner, hub, node} = await pair(t, {
     async run(spec, text, tools, signal, onReady) {
       assert.match(spec.bindingId, /^mesh-/)
       assert.equal(spec.workspace.cwd, '/worker/p')
@@ -57,31 +39,32 @@ test('two nodes transfer formal session identity, explicit tool calls and read-o
       onReady('formal-' + spec.bindingId)
       const response = await tools.invoke('send_parent', {text})
       assert.deepEqual(response, {received: true})
-      sessions.set(spec.bindingId, [{role:'user', text}])
     },
-    async transcript(spec) { return sessions.get(spec.bindingId) },
   })
+  const assertion = hub.sign('data-channel-assertion')
+  assert.equal(node.verify('hub', 'data-channel-assertion', assertion), true)
+  assert.equal(node.verify('unknown', 'data-channel-assertion', assertion), false)
+  assert.equal(node.verify('hub', 'other-data', assertion), false)
   const calls = []
   const tools = {definitions:[tool], async invoke(name,args) {calls.push({name,args}); return {received:true}}}
   const ready = []
   await runner.run(planner, 'plan', tools, undefined, id => ready.push(id))
-  await runner.run(worker, 'execute', tools, undefined, id => ready.push(id))
+  const largeMessage = 'execute 资料'.repeat(15_000)
+  await runner.run(worker, largeMessage, tools, undefined, id => ready.push(id))
   assert.equal(ready.length, 2)
   assert.notEqual(ready[0], ready[1])
   assert.match(ready[0], /^formal-mesh-/)
-  assert.deepEqual(calls, [{name:'send_parent',args:{text:'plan'}},{name:'send_parent',args:{text:'execute'}}])
-  assert.deepEqual(await runner.transcript(worker), [{role:'user', text:'execute'}])
-  await assert.rejects(runner.transcript({...worker,owner:'someone-else'}), /403/)
-  await assert.rejects(runner.run({...worker,allowedTools:['bash']}, 'expand grant', tools), /403/)
-  await assert.rejects(runner.run({...worker,workspace:{...worker.workspace,projectId:'q'}}, 'switch workspace', tools), /403/)
-  await assert.rejects(runner.run({...worker,parentBindingId:'missing'}, 'forge parent', tools), /403/)
-  await assert.rejects(runner.run({...planner,layer:'L1'}, 'attach root', tools), /403/)
-  await assert.rejects(runner.run(planner, 'unknown tool', {definitions:[{...tool,name:'bash'}]}), /403/)
-  const res = await fetch(url + '/prism/mesh/v1', {method:'POST',headers:{'x-prism-node':'hub',authorization:'Bearer wrong'}})
-  assert.equal(res.status, 401)
+  assert.deepEqual(calls, [{name:'send_parent',args:{text:'plan'}},{name:'send_parent',args:{text:largeMessage}}])
+  const denied = {status: 403}
+  await assert.rejects(runner.run({...worker,owner:'someone-else'}, 'wrong owner', tools), denied)
+  await assert.rejects(runner.run({...worker,allowedTools:['bash']}, 'expand grant', tools), denied)
+  await assert.rejects(runner.run({...worker,workspace:{...worker.workspace,projectId:'q'}}, 'switch workspace', tools), denied)
+  await assert.rejects(runner.run({...worker,parentBindingId:'missing'}, 'forge parent', tools), denied)
+  await assert.rejects(runner.run({...planner,layer:'L1'}, 'attach root', tools), denied)
+  await assert.rejects(runner.run(planner, 'unknown tool', {definitions:[{...tool,name:'bash'}]}), denied)
 })
 
-test('cancellation aborts the remote DSH turn and waits for its cleanup', async t => {
+test('cancellation aborts the remote DSH turn and waits for its cleanup', { timeout: 25_000 }, async t => {
   const stopped = Promise.withResolvers()
   const {runner} = await pair(t, {
     async run(_spec, _text, _tools, signal, ready) {

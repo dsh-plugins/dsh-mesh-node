@@ -1,9 +1,5 @@
-import { messages } from './messages.js'
-import { createHash, timingSafeEqual } from 'node:crypto'
-import type { IncomingMessage } from 'node:http'
 import type { TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
 
-export const endpoint = '/prism/mesh/v1'
 export const maxBody = 4 * 1024 * 1024
 
 export class MeshError extends Error {
@@ -50,49 +46,22 @@ export function parseTarget(raw: unknown, nodeId: string): TurnSpec {
   }
 }
 
-export interface InboundPeer { id: string; tokenEnv: string; projects: string[] }
-export interface OutboundPeer { id: string; tokenEnv: string; url: string }
-export interface MeshConfig { nodeId: string; peers?: OutboundPeer[]; incoming?: InboundPeer[]; stateDirectory?: string }
+/** 双向设备身份固定，projects 仅授权对端使用列出的本地项目。 */
+export interface MeshPeer { id: string; publicKey: string; projects?: string[] }
 
-export function token(envName: string): string {
-  const value = process.env[envName]
-  if (!value || !/^[\x21-\x7E]+$/.test(value)) throw new Error('Invalid Mesh peer credential in ' + envName)
-  return value
+/** 设备信令和 ICE 只使用运营者配置的基础设施及凭据。 */
+export interface WebRtcConfig {
+  signalingUrl: string
+  privateKeyEnv: string
+  signalingCaFile?: string
+  iceServers?: { urls: string[]; username?: string; credentialEnv?: string }[]
+  iceTransportPolicy?: 'all' | 'relay'
 }
 
-export function credentialHash(value: string): Buffer {
-  return createHash('sha256').update(value).digest()
-}
-
-export function authenticated(expected: Buffer, authorization?: string): boolean {
-  return !!authorization?.startsWith('Bearer ') && timingSafeEqual(expected, credentialHash(authorization.slice(7)))
-}
-
-export function peerUrl(url: string): URL {
-  const parsed = new URL(url)
-  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
-    throw new Error(messages.url)
-  }
-  const local = ['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname)
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) {
-    throw new Error(messages.https)
-  }
-  return new URL(endpoint, parsed)
-}
-
-export async function body(request: IncomingMessage): Promise<unknown> {
-  if (Number(request.headers['content-length']) > maxBody) throw new MeshError(413, 'Request too large')
-  const chunks: Buffer[] = []
-  let total = 0
-  for await (const chunk of request.iterator({destroyOnReturn: false})) {
-    const buffer = Buffer.from(chunk)
-    total += buffer.length
-    if (total > maxBody) {
-      request.resume()
-      throw new MeshError(413, 'Request too large')
-    }
-    chunks.push(buffer)
-  }
-  try { return JSON.parse(Buffer.concat(chunks).toString()) }
-  catch { throw new MeshError(400, 'Invalid JSON') }
+/** 缺省仅启用本机执行，配置远端设备时必须启用 WebRTC。 */
+export interface MeshConfig {
+  nodeId: string
+  peers?: MeshPeer[]
+  webrtc?: WebRtcConfig
+  stateDirectory?: string
 }

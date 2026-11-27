@@ -1,79 +1,103 @@
-import { messages } from './messages.js'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { KeyObject } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-host-webserver'
 import { dshPath } from '@deepseek-ai/dsh-home-paths'
 import { MeshRunner } from './client.js'
-import { MeshWorker, type WorkerServices } from './worker.js'
-import { authenticated, body, credentialHash, endpoint, maxBody, MeshError, names, string, token,
-  type InboundPeer, type MeshConfig } from './protocol.js'
+import { MeshConnections } from './connections.js'
+import { MeshIdentity, publicKey } from './identity.js'
+import { messages } from './messages.js'
+import { MeshError, names } from './protocol.js'
+import type { MeshConfig, MeshPeer } from './protocol.js'
+import { isNodeId } from './signaling-protocol.js'
+import { MeshWorker } from './worker.js'
+import type { WorkerServices } from './worker.js'
 
 export { MeshRunner } from './client.js'
-export type { MeshConfig } from './protocol.js'
+export type { MeshConfig, MeshPeer, WebRtcConfig } from './protocol.js'
 export type { WorkerServices } from './worker.js'
 
 export const name = 'dsh-mesh-node'
-export const inject = ['webServer']
 
 declare module '@deepseek-ai/cordis' {
   interface Context { dshMesh: MeshNode }
 }
 
-/** Registered by the orchestrator as a standard SubagentProvider for each node ID. */
+/** 提供供编排器注册的节点及互认设备身份，工作节点使用同一授权入口处理远程轮次。 */
 export class MeshNode {
   readonly nodeId: string
-  readonly nodeIds: string[]
+  readonly nodeIds: readonly string[]
   private readonly worker: MeshWorker
-  private readonly peers = new Map<string, MeshRunner>()
-  private readonly incoming = new Map<string, {peer: InboundPeer; hash: Buffer}>()
+  private readonly identity: MeshIdentity
+  private readonly connections?: MeshConnections
+  private readonly peers = new Map<string, MeshPeer>()
 
   constructor(config: MeshConfig) {
-    this.nodeId = string(config.nodeId, 128)
-    for (const peer of config.peers ?? []) {
-      string(peer.id, 128)
-      if (peer.id === this.nodeId || this.peers.has(peer.id)) throw new Error(messages.duplicate)
-      this.peers.set(peer.id, new MeshRunner(this.nodeId, peer, token(peer.tokenEnv)))
+    if (!isNodeId(config.nodeId)) {
+      throw new Error('Invalid Mesh node ID')
     }
-    const hashes = new Set<string>()
-    for (const peer of config.incoming ?? []) {
-      string(peer.id, 128)
-      names(peer.projects)
-      const hash = credentialHash(token(peer.tokenEnv))
-      if (peer.id === this.nodeId || this.incoming.has(peer.id) || hashes.has(hash.toString('hex'))) {
-        throw new Error(messages.credential)
+    if (Object.hasOwn(config, 'incoming') || (config.peers?.length && !config.webrtc)) {
+      throw new Error('Mesh peers now require a WebRTC configuration and pinned public keys')
+    }
+    this.nodeId = config.nodeId
+    const directory = config.stateDirectory ?? dshPath('data', 'prism', 'mesh')
+    const keys = new Map<string, KeyObject>()
+    const pins = new Set<string>()
+    for (const peer of config.peers ?? []) {
+      if (!isNodeId(peer.id) || peer.id === this.nodeId || keys.has(peer.id) || pins.has(peer.publicKey)) {
+        throw new Error(messages.duplicate)
       }
-      hashes.add(hash.toString('hex'))
-      this.incoming.set(peer.id, {peer, hash})
+      keys.set(peer.id, publicKey(peer.publicKey))
+      pins.add(peer.publicKey)
+      this.peers.set(peer.id, { ...peer, projects: names(peer.projects ?? []) })
     }
     this.nodeIds = Array.from(this.peers.keys())
-    this.worker = new MeshWorker(this.nodeId, config.stateDirectory ?? dshPath('data', 'prism', 'mesh'))
+    if (config.webrtc && (typeof config.webrtc.privateKeyEnv !== 'string' || !config.webrtc.privateKeyEnv.trim())) {
+      throw new Error('Mesh WebRTC requires a private key environment variable')
+    }
+    this.identity = new MeshIdentity(this.nodeId, directory, keys, config.webrtc?.privateKeyEnv)
+    if (config.webrtc) {
+      const check = this.identity.sign('prism-mesh-v2-local-identity')
+      if (this.nodeIds.some(id => this.identity.verify(id, 'prism-mesh-v2-local-identity', check))) {
+        throw new Error('Mesh peer key matches the local device key')
+      }
+      this.connections = new MeshConnections(this.nodeId, new Set(this.nodeIds), this.identity, config.webrtc,
+        (id, payload) => this.worker.handle(this.peers.get(id)!, payload))
+    }
+    this.worker = new MeshWorker(this.nodeId, directory)
   }
 
   runnerFor(nodeId: string): MeshRunner {
-    const runner = this.peers.get(nodeId)
-    if (!runner) throw new Error(messages.unknown)
-    return runner
+    if (!this.peers.has(nodeId)) {
+      throw new Error(messages.unknown)
+    }
+    return new MeshRunner(nodeId, (payload, signal) => this.request(nodeId, payload, signal))
   }
 
   attach(services: WorkerServices) { return this.worker.attach(services) }
-  close() { return this.worker.close() }
 
-  async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('content-type', 'application/json; charset=utf-8')
-    res.setHeader('cache-control', 'no-store')
-    try {
-      if (req.method !== 'POST') throw new MeshError(405, 'POST required')
-      const id = req.headers['x-prism-node']
-      const entry = typeof id === 'string' ? this.incoming.get(id) : undefined
-      if (!entry || !authenticated(entry.hash, req.headers.authorization)) throw new MeshError(401, 'Unauthorized')
-      if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new MeshError(415, 'JSON required')
-      const result = await this.worker.handle(entry.peer, await body(req))
-      const serialized = JSON.stringify(result)
-      if (Buffer.byteLength(serialized) > maxBody) throw new MeshError(413, 'Mesh response too large')
-      res.end(serialized)
-    } catch (error) {
-      res.statusCode = error instanceof MeshError ? error.status : 500
-      res.end(JSON.stringify({error: error instanceof MeshError ? error.message : 'Mesh operation failed'}))
+  sign(data: string): string { return this.identity.sign(data) }
+
+  verify(nodeId: string, data: string, signature: string): boolean { return this.identity.verify(nodeId, data, signature) }
+
+  async close() {
+    await this.connections?.close()
+    await this.worker.close()
+  }
+
+  private async request(nodeId: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (!this.connections) {
+      throw new Error(messages.unknown)
+    }
+    for (let attempt = 0; ; attempt++) {
+      const timeout = AbortSignal.timeout(35_000)
+      const cancellation = signal ? AbortSignal.any([timeout, signal]) : timeout
+      try {
+        return await this.connections.request(nodeId, payload, cancellation)
+      } catch (error) {
+        signal?.throwIfAborted()
+        if (attempt >= 1 || (error instanceof MeshError && error.status < 500)) {
+          throw error
+        }
+      }
     }
   }
 }
@@ -81,6 +105,5 @@ export class MeshNode {
 export function apply(ctx: Context, config: MeshConfig) {
   const node = new MeshNode(config)
   ctx.provide('dshMesh', node)
-  ctx.webServer.register({kind: 'exact', path: endpoint, auth: 'anonymous', handler: (req, res) => node.handle(req, res)})
   ctx.effect(() => () => node.close(), 'prism.mesh')
 }

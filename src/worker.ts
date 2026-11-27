@@ -3,10 +3,10 @@ import { chmodSync, mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { Layer, SessionRunner, ToolDefinition, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
-import { MeshError, names, parseTarget, record, string, type InboundPeer } from './protocol.js'
+import { MeshError, names, parseTarget, record, string, type MeshPeer } from './protocol.js'
 
 export interface WorkerServices {
-  runner: SessionRunner
+  runner: Pick<SessionRunner, 'run'>
   authorize(spec: TurnSpec): TurnSpec
   definitionsFor(layer: Layer): ToolDefinition[]
 }
@@ -32,7 +32,7 @@ class WorkerTurn {
   phase: 'running' | 'done' | 'failed' = 'running'
   sessionId?: string
 
-  constructor(readonly fingerprint: string, runner: SessionRunner, spec: TurnSpec, text: string, definitions: ToolDefinition[]) {
+  constructor(readonly fingerprint: string, runner: Pick<SessionRunner, 'run'>, spec: TurnSpec, text: string, definitions: ToolDefinition[]) {
     const invoke = async (name: string, args: unknown) => {
       this.controller.signal.throwIfAborted()
       if (!definitions.some(d => d.name === name)) throw new MeshError(403, 'Tool unavailable')
@@ -183,23 +183,19 @@ export class MeshWorker {
     }
   }
 
-  async handle(peer: InboundPeer, input: unknown): Promise<unknown> {
+  async handle(peer: MeshPeer, input: unknown): Promise<unknown> {
     const data = record(input)
     const op = string(data.op)
     const services = this.services
     if (!services) throw new MeshError(503, 'Mesh worker unavailable')
-    if (op === 'start' || op === 'transcript') {
+    if (op === 'start') {
       const target = parseTarget(data.target, this.nodeId)
-      if (!peer.projects.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')
+      if (!peer.projects?.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')
       let spec: TurnSpec
       try { spec = services.authorize(target) }
       catch { throw new MeshError(403, 'Delegation denied') }
       const scopedId = (id: string) => 'mesh-' + digest([peer.id, id])
       spec = {...spec, bindingId: scopedId(spec.bindingId), parentBindingId: spec.parentBindingId && scopedId(spec.parentBindingId)}
-      if (op === 'transcript') {
-        this.bind(spec)
-        return services.runner.transcript(spec)
-      }
       const runKey = digest([peer.id, string(data.runId)])
       const text = string(data.text, 1_000_000)
       const allowed = names(data.tools)
