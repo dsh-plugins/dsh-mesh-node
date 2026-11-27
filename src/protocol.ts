@@ -1,4 +1,5 @@
 import type { ProjectMetadata, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
+import { isNodeId } from './signaling-protocol.js'
 
 export const maxBody = 4 * 1024 * 1024
 
@@ -49,18 +50,29 @@ export function projectMetadata(raw: unknown, nodeId: string): ProjectMetadata {
 }
 
 /** Workspace paths, provider options and system prompts are resolved on the device. */
-export function wireTarget(spec: TurnSpec) {
+export function wireTarget(spec: MeshTurnSpec) {
   return {
     bindingId: spec.bindingId, owner: spec.owner, parentBindingId: spec.parentBindingId,
     layer: spec.layer, projectId: spec.workspace.projectId, nodeId: spec.workspace.nodeId,
     modelId: spec.model.id, allowedTools: spec.allowedTools, delegationCeiling: spec.delegationCeiling,
+    room: spec.room, depth: spec.depth, maxDepth: spec.maxDepth,
   }
 }
 
-export function parseTarget(raw: unknown, nodeId: string): TurnSpec {
+function depth(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new MeshError(400, 'Invalid Mesh delegation depth')
+  }
+  return value
+}
+
+export function parseTarget(raw: unknown, nodeId: string): MeshTurnSpec {
   const v = record(raw)
   if (v.nodeId !== nodeId || (v.layer !== 'L1' && v.layer !== 'L2' && v.layer !== 'L3')) throw new MeshError(403, 'Invalid delegation')
   if (v.layer === 'L1' && v.parentBindingId !== undefined) throw new MeshError(403, 'Invalid root delegation')
+  if (v.room !== undefined && v.layer !== 'L2') {
+    throw new MeshError(403, 'Only a planner can join a Mesh Room')
+  }
   return {
     layer: v.layer, workspace: { nodeId, projectId: string(v.projectId), cwd: '' },
     model: {id: string(v.modelId), description: ''}, bindingId: string(v.bindingId),
@@ -68,6 +80,90 @@ export function parseTarget(raw: unknown, nodeId: string): TurnSpec {
     ...(v.layer !== 'L1' && {parentBindingId: string(v.parentBindingId)}),
     allowedTools: names(v.allowedTools), systemPrompt: '',
     ...(v.layer === 'L2' && {delegationCeiling: names(v.delegationCeiling ?? [])}),
+    ...(v.room === undefined ? {} : { room: parseRoom(v.room) }),
+    ...(v.depth === undefined ? {} : { depth: depth(v.depth) }),
+    ...(v.maxDepth === undefined ? {} : { maxDepth: depth(v.maxDepth) }),
+  }
+}
+
+/** 已授权的 Room 成员地址，节点身份仍由 DataChannel 独立认证。 */
+export interface MeshAgentAddress { nodeId: string; agentId: string }
+
+/** 由协调节点签名的成员快照，业务授权由编排器签发和撤销。 */
+export interface MeshRoom {
+  id: string
+  coordinatorNode: string
+  members: MeshAgentAddress[]
+  grant: string
+}
+
+/** 工作节点解析的执行描述，Room 仅随 L2 到达执行节点。 */
+export type MeshTurnSpec = TurnSpec & { room?: MeshRoom; depth?: number; maxDepth?: number }
+
+/** 一次定向对等通信，来源节点由消息所在的安全链路提供。 */
+export interface PeerMessage {
+  messageId: string
+  room: MeshRoom
+  senderAgentId: string
+  targetAgentId: string
+  text: string
+  proof: string
+}
+
+/** 目标节点代为向协调端确认收到消息，使编排器能持久化收件箱。 */
+export interface PeerInboxMessage extends PeerMessage {
+  sourceNodeId: string
+  targetNodeId: string
+}
+
+function node(value: unknown): string {
+  if (!isNodeId(value)) {
+    throw new MeshError(400, 'Invalid Mesh node ID')
+  }
+  return value
+}
+
+function parseRoom(raw: unknown): MeshRoom {
+  const room = record(raw)
+  if (!Array.isArray(room.members) || !room.members.length || room.members.length > 128) {
+    throw new MeshError(400, 'Invalid Mesh Room membership')
+  }
+  const members = room.members.map(raw => {
+    const item = record(raw)
+    return { nodeId: node(item.nodeId), agentId: string(item.agentId, 256) }
+  })
+  if (new Set(members.map(item => JSON.stringify([item.nodeId, item.agentId]))).size !== members.length) {
+    throw new MeshError(400, 'Duplicate Mesh Room member')
+  }
+  return {
+    id: string(room.id, 256), coordinatorNode: node(room.coordinatorNode), members, grant: string(room.grant, 8_192),
+  }
+}
+
+export function peerMessage(value: unknown): PeerMessage {
+  const message = record(value)
+  if (typeof message.proof !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(message.proof)) {
+    throw new MeshError(400, 'Invalid Mesh Room message proof')
+  }
+  return {
+    messageId: string(message.messageId, 256), room: parseRoom(message.room),
+    senderAgentId: string(message.senderAgentId, 256), targetAgentId: string(message.targetAgentId, 256),
+    text: string(message.text, 16_384), proof: message.proof,
+  }
+}
+
+export function peerInboxMessage(value: unknown): PeerInboxMessage {
+  const message = record(value)
+  return {
+    ...peerMessage(message), sourceNodeId: node(message.sourceNodeId), targetNodeId: node(message.targetNodeId),
+  }
+}
+
+export function assertParticipants(message: PeerMessage, source: string, target: string) {
+  const members = message.room.members
+  if (!members.some(member => member.nodeId === source && member.agentId === message.senderAgentId)
+      || !members.some(member => member.nodeId === target && member.agentId === message.targetAgentId)) {
+    throw new MeshError(403, 'Mesh Room participants unavailable')
   }
 }
 

@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentTools, SessionRunner, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
+import type { AgentTools, SessionRunner } from '@dsh-prism/dsh-orchestrator/contracts'
 import { messages } from './messages.js'
 import { record, string, wireTarget } from './protocol.js'
+import type { MeshTurnSpec } from './protocol.js'
 
 /** 同一轮次及编排工具调用在重连后沿用原 ID。 */
 export class MeshRunner implements Pick<SessionRunner, 'run'> {
   constructor(private readonly nodeId: string,
     private readonly rpc: (payload: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>) {}
 
-  async run(spec: TurnSpec, text: string, tools: AgentTools, signal?: AbortSignal, onReady?: (sessionId: string) => void) {
+  async run(spec: MeshTurnSpec, text: string, tools: AgentTools, signal?: AbortSignal, onReady?: (sessionId: string) => void) {
     if (spec.workspace.nodeId !== this.nodeId) {
       throw new Error(messages.destination)
     }

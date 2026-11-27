@@ -2,14 +2,18 @@ import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
-import type { Layer, ProjectMetadata, SessionRunner, ToolDefinition, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
-import { MeshError, names, parseTarget, projectMetadata, record, string, type MeshPeer } from './protocol.js'
+import type { Layer, ProjectMetadata, SessionRunner, ToolDefinition } from '@dsh-prism/dsh-orchestrator/contracts'
+import { assertParticipants, MeshError, names, parseTarget, peerInboxMessage, peerMessage, projectMetadata, record, string } from './protocol.js'
+import type { MeshPeer, MeshTurnSpec, PeerInboxMessage, PeerMessage } from './protocol.js'
 
 export interface WorkerServices {
   runner: Pick<SessionRunner, 'run'>
-  authorize(spec: TurnSpec): TurnSpec
+  authorize(spec: MeshTurnSpec): MeshTurnSpec
   definitionsFor(layer: Layer): ToolDefinition[]
   queryProjects?(owner: string, search?: string): ProjectMetadata[] | Promise<ProjectMetadata[]>
+  invokePeerTool?(spec: MeshTurnSpec, args: unknown, signal?: AbortSignal): Promise<unknown>
+  receivePeerMessage?(fromNodeId: string, message: PeerMessage, signal?: AbortSignal): Promise<void>
+  acceptPeerInbox?(fromTargetNodeId: string, message: PeerInboxMessage, signal?: AbortSignal): Promise<void>
 }
 
 function digest(parts: unknown): string {
@@ -33,10 +37,17 @@ class WorkerTurn {
   phase: 'running' | 'done' | 'failed' = 'running'
   sessionId?: string
 
-  constructor(readonly fingerprint: string, runner: Pick<SessionRunner, 'run'>, spec: TurnSpec, text: string, definitions: ToolDefinition[]) {
+  constructor(readonly fingerprint: string, runner: Pick<SessionRunner, 'run'>, spec: MeshTurnSpec, text: string,
+    definitions: ToolDefinition[], direct?: (args: unknown, signal: AbortSignal) => Promise<unknown>) {
     const invoke = async (name: string, args: unknown) => {
       this.controller.signal.throwIfAborted()
       if (!definitions.some(d => d.name === name)) throw new MeshError(403, 'Tool unavailable')
+      if (name === 'peer_send') {
+        if (!direct || spec.layer !== 'L2' || !spec.room) {
+          throw new MeshError(403, 'Mesh Room tool unavailable')
+        }
+        return direct(args, this.controller.signal)
+      }
       return new Promise<unknown>((resolve, reject) => {
         this.calls.set(randomUUID(), {name, args, resolve, reject})
         this.notify()
@@ -130,15 +141,17 @@ export class MeshWorker {
         CREATE TABLE IF NOT EXISTS lineage (
           id TEXT PRIMARY KEY, owner TEXT, layer TEXT, project TEXT, cwd TEXT, parent TEXT, ceiling TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS starts (run TEXT PRIMARY KEY, at INTEGER NOT NULL)`)
+        CREATE TABLE IF NOT EXISTS starts (run TEXT PRIMARY KEY, at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS depths (id TEXT PRIMARY KEY, depth INTEGER NOT NULL, ceiling INTEGER NOT NULL)`)
       this.database = db
     }
     return this.database
   }
 
-  private bind(spec: TurnSpec, runKey?: string): void {
+  private bind(spec: MeshTurnSpec, runKey: string): void {
     const db = this.db()
     const select = db.prepare('SELECT * FROM lineage WHERE id=?')
+    const selectDepth = db.prepare('SELECT * FROM depths WHERE id=?')
     const parentId = spec.parentBindingId ?? null
     const {projectId, cwd} = spec.workspace
     const grant = spec.layer === 'L2' ? spec.delegationCeiling ?? [] : spec.allowedTools
@@ -148,16 +161,14 @@ export class MeshWorker {
     }
     db.exec('BEGIN IMMEDIATE')
     try {
-      if (runKey) {
-        const now = Date.now()
-        if (now - this.lastPrune >= 3_600_000) {
-          db.prepare('DELETE FROM starts WHERE at < ?').run(now - 86_400_000)
-          this.lastPrune = now
-        }
-        // A lost start reply followed by a worker restart must never repeat an accepted turn.
-        if (!db.prepare('INSERT OR IGNORE INTO starts VALUES(?,?)').run(runKey, now).changes) {
-          throw new MeshError(409, 'Turn already admitted on a prior worker')
-        }
+      const now = Date.now()
+      if (now - this.lastPrune >= 3_600_000) {
+        db.prepare('DELETE FROM starts WHERE at < ?').run(now - 86_400_000)
+        this.lastPrune = now
+      }
+      // 丢失启动确认后的重试与进程重启仍指向同一次执行。
+      if (!db.prepare('INSERT OR IGNORE INTO starts VALUES(?,?)').run(runKey, now).changes) {
+        throw new MeshError(409, 'Turn already admitted on a prior worker')
       }
       if (spec.layer === 'L3') {
         const parent = parentId ? select.get(parentId) : undefined
@@ -165,17 +176,29 @@ export class MeshWorker {
             parent.project !== projectId || parent.cwd !== cwd || !permitted(parent)) {
           throw new MeshError(403, 'Invalid parent delegation')
         }
+        const limit = selectDepth.get(parentId!)
+        if (limit && (spec.depth !== Number(limit.depth) + 1 || spec.maxDepth === undefined || spec.maxDepth > Number(limit.ceiling))) {
+          throw new MeshError(403, 'Invalid parent delegation depth')
+        }
       }
       const current = select.get(spec.bindingId)
-      if (!current && runKey) {
+      if (!current) {
         db.prepare('INSERT INTO lineage VALUES(?,?,?,?,?,?,?)')
           .run(spec.bindingId, spec.owner, spec.layer, projectId, cwd, parentId, JSON.stringify(grant))
       } else {
-        if (!current || current.owner !== spec.owner || current.layer !== spec.layer ||
+        if (current.owner !== spec.owner || current.layer !== spec.layer ||
             current.project !== projectId || current.cwd !== cwd || current.parent !== parentId || !permitted(current)) {
           throw new MeshError(403, 'Session binding unavailable')
         }
-        if (runKey) db.prepare('UPDATE lineage SET ceiling=? WHERE id=?').run(JSON.stringify(grant), spec.bindingId)
+        db.prepare('UPDATE lineage SET ceiling=? WHERE id=?').run(JSON.stringify(grant), spec.bindingId)
+      }
+      const oldDepth = selectDepth.get(spec.bindingId)
+      if (oldDepth && (spec.depth !== Number(oldDepth.depth) || spec.maxDepth === undefined || spec.maxDepth > Number(oldDepth.ceiling))) {
+        throw new MeshError(403, 'Mesh delegation depth cannot increase')
+      }
+      if (spec.depth !== undefined && spec.maxDepth !== undefined) {
+        db.prepare('INSERT INTO depths VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET ceiling=excluded.ceiling')
+          .run(spec.bindingId, spec.depth, spec.maxDepth)
       }
       db.exec('COMMIT')
     } catch (err) {
@@ -184,11 +207,29 @@ export class MeshWorker {
     }
   }
 
-  async handle(peer: MeshPeer, input: unknown): Promise<unknown> {
+  async handle(peer: Pick<MeshPeer, 'id' | 'projects'>, input: unknown, signal?: AbortSignal): Promise<unknown> {
     const data = record(input)
     const op = string(data.op)
     const services = this.services
     if (!services) throw new MeshError(503, 'Mesh worker unavailable')
+    if (op === 'peer_send') {
+      const message = peerMessage(data.message)
+      assertParticipants(message, peer.id, this.nodeId)
+      if (!services.receivePeerMessage) {
+        throw new MeshError(403, 'Mesh Room receiver unavailable')
+      }
+      await services.receivePeerMessage(peer.id, message, signal)
+      return { accepted: true }
+    }
+    if (op === 'peer_inbox') {
+      const message = peerInboxMessage(data.message)
+      if (message.room.coordinatorNode !== this.nodeId || message.targetNodeId !== peer.id || !services.acceptPeerInbox) {
+        throw new MeshError(403, 'Mesh Room coordinator unavailable')
+      }
+      assertParticipants(message, message.sourceNodeId, peer.id)
+      await services.acceptPeerInbox(peer.id, message, signal)
+      return { accepted: true }
+    }
     if (op === 'projects') {
       const owner = string(data.owner, 2_048)
       const search = data.search === undefined ? undefined : string(data.search, 1_024)
@@ -203,11 +244,15 @@ export class MeshWorker {
     if (op === 'start') {
       const target = parseTarget(data.target, this.nodeId)
       if (!peer.projects?.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')
-      let spec: TurnSpec
-      try { spec = services.authorize(target) }
+      let logical: MeshTurnSpec
+      try { logical = services.authorize(target) }
       catch { throw new MeshError(403, 'Delegation denied') }
+      if ((logical.depth === undefined) !== (logical.maxDepth === undefined)
+          || (logical.depth !== undefined && logical.maxDepth !== undefined && logical.depth > logical.maxDepth)) {
+        throw new MeshError(403, 'Invalid Mesh delegation depth')
+      }
       const scopedId = (id: string) => 'mesh-' + digest([peer.id, id])
-      spec = {...spec, bindingId: scopedId(spec.bindingId), parentBindingId: spec.parentBindingId && scopedId(spec.parentBindingId)}
+      const spec = {...logical, bindingId: scopedId(logical.bindingId), parentBindingId: logical.parentBindingId && scopedId(logical.parentBindingId)}
       const runKey = digest([peer.id, string(data.runId)])
       const text = string(data.text, 1_000_000)
       const allowed = names(data.tools)
@@ -218,7 +263,9 @@ export class MeshWorker {
       if (current && current.fingerprint !== fingerprint) throw new MeshError(409, 'Conflicting turn')
       if (!current) {
         this.bind(spec, runKey)
-        this.turns.set(runKey, new WorkerTurn(fingerprint, services.runner, spec, text, definitions))
+        const invoke = services.invokePeerTool
+        this.turns.set(runKey, new WorkerTurn(fingerprint, services.runner, spec, text, definitions,
+          invoke && ((args, signal) => invoke(logical, args, signal))))
       }
       return {accepted: true}
     }

@@ -6,14 +6,14 @@ import { MeshRunner } from './client.js'
 import { MeshConnections } from './connections.js'
 import { MeshIdentity, publicKey } from './identity.js'
 import { messages } from './messages.js'
-import { MeshError, names, projectMetadata, string } from './protocol.js'
-import type { MeshConfig, MeshPeer } from './protocol.js'
+import { assertParticipants, MeshError, names, peerInboxMessage, peerMessage, projectMetadata, record, string } from './protocol.js'
+import type { MeshAgentAddress, MeshConfig, MeshPeer, PeerInboxMessage, PeerMessage } from './protocol.js'
 import { isNodeId } from './signaling-protocol.js'
 import { MeshWorker } from './worker.js'
 import type { WorkerServices } from './worker.js'
 
 export { MeshRunner } from './client.js'
-export type { MeshConfig, MeshPeer, WebRtcConfig } from './protocol.js'
+export type { MeshAgentAddress, MeshConfig, MeshPeer, MeshRoom, MeshTurnSpec, PeerInboxMessage, PeerMessage, WebRtcConfig } from './protocol.js'
 export type { WorkerServices } from './worker.js'
 
 export const name = 'dsh-mesh-node'
@@ -61,7 +61,7 @@ export class MeshNode {
         throw new Error('Mesh peer key matches the local device key')
       }
       this.connections = new MeshConnections(this.nodeId, new Set(this.nodeIds), this.identity, config.webrtc,
-        (id, payload) => this.worker.handle(this.peers.get(id)!, payload))
+        (id, payload, signal) => this.worker.handle(this.peers.get(id)!, payload, signal))
     }
     this.worker = new MeshWorker(this.nodeId, directory)
   }
@@ -86,6 +86,31 @@ export class MeshNode {
       throw new MeshError(400, 'Invalid Mesh project index')
     }
     return rows.map(row => projectMetadata(row, nodeId))
+  }
+
+  async peerSend(target: MeshAgentAddress, body: Omit<PeerMessage, 'targetAgentId'>, signal?: AbortSignal): Promise<void> {
+    const message = peerMessage({ ...body, targetAgentId: target.agentId })
+    assertParticipants(message, this.nodeId, target.nodeId)
+    await this.sendRoom(target.nodeId, { op: 'peer_send', message }, signal)
+  }
+
+  async submitPeerInbox(coordinatorNode: string, body: PeerInboxMessage, signal?: AbortSignal): Promise<void> {
+    const message = peerInboxMessage(body)
+    if (message.room.coordinatorNode !== coordinatorNode || message.targetNodeId !== this.nodeId) {
+      throw new MeshError(403, 'Mesh Room coordinator unavailable')
+    }
+    assertParticipants(message, message.sourceNodeId, message.targetNodeId)
+    await this.sendRoom(coordinatorNode, { op: 'peer_inbox', message }, signal)
+  }
+
+  private async sendRoom(nodeId: string, payload: Record<string, unknown>, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const result = nodeId === this.nodeId
+      ? await this.worker.handle({ id: this.nodeId }, payload, signal)
+      : await this.request(nodeId, payload, signal)
+    if (record(result).accepted !== true) {
+      throw new MeshError(503, 'Mesh Room message not accepted')
+    }
   }
 
   sign(data: string): string { return this.identity.sign(data) }

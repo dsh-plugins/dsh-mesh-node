@@ -104,3 +104,62 @@ test('remote project indexes are restricted to the authenticated peer and public
   }])
   assert.deepEqual(await hub.queryProjects('worker', 'someone-else', 'p'), [])
 })
+
+test('Room messages go directly to the addressed worker and retain origin proof for the coordinator', { timeout: 35_000 }, async t => {
+  const network = await meshNetwork(t, {
+    hub: { receiver: [], sender: [] }, receiver: { hub: [], sender: [] }, sender: { hub: ['p'], receiver: [] },
+  })
+  const receiver = new MeshNode(network.config('receiver'))
+  const sender = new MeshNode(network.config('sender'))
+  const hub = new MeshNode(network.config('hub'))
+  network.cleanup(() => Promise.all([hub.close(), sender.close(), receiver.close()]))
+  const members = [
+    { nodeId: 'sender', agentId: 'sender-agent' }, { nodeId: 'receiver', agentId: 'receiver-agent' },
+  ]
+  const room = { id: 'room', coordinatorNode: 'hub', members, grant: hub.sign(JSON.stringify(members)) }
+  const received = []
+  const ids = (message, nodeId) => JSON.stringify([message.messageId, message.room.id,
+    message.senderAgentId, 'receiver-agent', nodeId, message.text])
+  const attach = (node, services) => node.attach({ runner: {}, authorize: spec => spec, definitionsFor: () => [], ...services })
+  attach(hub, {
+    async acceptPeerInbox(from, message) {
+      assert.equal(from, 'receiver')
+      assert.equal(message.sourceNodeId, 'sender')
+      assert.equal(hub.verify(message.sourceNodeId, ids(message, message.targetNodeId), message.proof), true)
+      received.push(message.text)
+    },
+  })
+  attach(receiver, {
+    async receivePeerMessage(from, message) {
+      assert.equal(from, 'sender')
+      assert.equal(receiver.verify('hub', JSON.stringify(message.room.members), message.room.grant), true)
+      assert.equal(receiver.verify(from, ids(message, 'receiver'), message.proof), true)
+      await receiver.submitPeerInbox('hub', { ...message, sourceNodeId: from, targetNodeId: 'receiver' })
+    },
+  })
+  const peerTool = { ...tool, name: 'peer_send' }
+  attach(sender, {
+    runner: {
+      async run(spec, _text, tools, _signal, ready) {
+        assert.match(spec.bindingId, /^mesh-/)
+        ready('sender-session')
+        await tools.invoke('peer_send', { text: '工程进度' })
+      },
+    },
+    definitionsFor: () => [peerTool],
+    async invokePeerTool(spec, args, signal) {
+      assert.equal(spec.bindingId, 'sender-agent')
+      assert.equal(spec.depth, 1)
+      assert.equal(spec.maxDepth, 2)
+      const message = { messageId: 'message', room: spec.room, senderAgentId: spec.bindingId, text: args.text }
+      await sender.peerSend(members[1], { ...message, proof: sender.sign(ids(message, 'receiver')) }, signal)
+    },
+  })
+  await hub.runnerFor('sender').run({
+    ...planner, bindingId: 'sender-agent', workspace: { ...planner.workspace, nodeId: 'sender' }, room, depth: 1, maxDepth: 2,
+  }, 'Start', { definitions: [peerTool], invoke: async () => assert.fail('Transport forwarded the peer tool to the hub') })
+  assert.deepEqual(received, ['工程进度'])
+  await assert.rejects(sender.peerSend({ ...members[1], agentId: 'unrelated' }, {
+    room, messageId: 'denied', senderAgentId: 'sender-agent', text: 'denied', proof: sender.sign('denied'),
+  }), { status: 403 })
+})
