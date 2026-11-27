@@ -9,6 +9,11 @@ import type { SignalPacket } from './signaling-protocol.js'
 import { SignalSocket, until } from './signal-socket.js'
 import { controlLabel, MeshWire } from './wire.js'
 
+export type TransportConfig = Omit<WebRtcConfig, 'privateKeyEnv' | 'iceServers'> & {
+  iceServers?: (NonNullable<WebRtcConfig['iceServers']>[number] & { credential?: string })[]
+  localTest?: boolean
+}
+
 interface Link {
   cancellation: AbortController
   ready: PromiseWithResolvers<MeshWire>
@@ -24,14 +29,14 @@ interface Link {
   knownCandidates: Set<string>
 }
 
-function iceServers(config: WebRtcConfig): RTCIceServer[] {
+function iceServers(config: TransportConfig): RTCIceServer[] {
   const entries = config.iceServers ?? []
   const servers = entries.map(entry => {
     if (!Array.isArray(entry.urls) || !entry.urls.length || entry.urls.some(url => typeof url !== 'string' || !/^(stun:|turn:|turns:)/.test(url) || url.includes('@'))) {
       throw new Error('Invalid Mesh ICE server URL')
     }
     const turn = entry.urls.some(url => /^(turn:|turns:)/.test(url))
-    const credential = entry.credentialEnv === undefined ? undefined : process.env[entry.credentialEnv]
+    const credential = entry.credential ?? (entry.credentialEnv === undefined ? undefined : process.env[entry.credentialEnv])
     if (turn && (!entry.username || !credential)) {
       throw new Error('Mesh TURN requires a username and credential environment variable')
     }
@@ -74,18 +79,21 @@ export class MeshConnections {
   private readonly servers: RTCIceServer[]
   private stopped = false
 
-  constructor(private readonly nodeId: string, private readonly peerIds: ReadonlySet<string>,
-    identity: MeshIdentity, private readonly config: WebRtcConfig,
-    private readonly handle: (nodeId: string, payload: unknown, signal: AbortSignal) => Promise<unknown>) {
+  constructor(private readonly nodeId: string, private readonly peerIds: { has(nodeId: string): boolean },
+    identity: MeshIdentity, private readonly config: TransportConfig,
+    private readonly handle: (nodeId: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
+    onRevoked?: (nodeId: string, pairId: string) => void) {
     const url = new URL(config.signalingUrl)
-    if (url.protocol !== 'wss:' || url.username || url.password || url.hash || url.search) {
+    const local = config.localTest && url.protocol === 'ws:' &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    if ((!local && url.protocol !== 'wss:') || url.username || url.password || url.hash || url.search) {
       throw new Error('Mesh signaling requires a WSS URL without credentials')
     }
     if (config.iceTransportPolicy !== undefined && config.iceTransportPolicy !== 'all' && config.iceTransportPolicy !== 'relay') {
       throw new Error('Invalid Mesh ICE transport policy')
     }
     this.servers = iceServers(config)
-    this.signal = new SignalSocket(nodeId, url, identity, packet => this.onPacket(packet), config.signalingCaFile)
+    this.signal = new SignalSocket(nodeId, url, identity, packet => this.onPacket(packet), config.signalingCaFile, onRevoked)
   }
 
   private createLink(nodeId: string): Link {
@@ -300,7 +308,24 @@ export class MeshConnections {
     }
   }
 
-  async request(nodeId: string, payload: unknown, signal: AbortSignal): Promise<unknown> {
+  status(nodeId: string): 'connecting' | 'connected' | 'offline' {
+    const link = this.links.get(nodeId)
+    return link?.active ? 'connected' : link ? 'connecting' : 'offline'
+  }
+
+  disconnect(nodeId: string) {
+    const link = this.links.get(nodeId)
+    if (link) {
+      this.end(nodeId, link, new Error('Mesh pairing removed'))
+    }
+    this.seen.delete(nodeId)
+  }
+
+  async connect(nodeId: string, signal: AbortSignal): Promise<void> {
+    await this.wire(nodeId, signal)
+  }
+
+  private async wire(nodeId: string, signal: AbortSignal): Promise<MeshWire> {
     signal.throwIfAborted()
     if (this.stopped || !this.peerIds.has(nodeId)) {
       throw new Error('Mesh peer unavailable')
@@ -314,11 +339,25 @@ export class MeshConnections {
         : this.dial(nodeId, link, connectionId))
     }
     try {
-      const wire = await until(link.ready.promise, signal)
-      return await wire.request(payload, signal)
+      return await until(link.ready.promise, signal)
     } catch (error) {
       if (error instanceof Error && error.name === 'TimeoutError') {
         this.end(nodeId, link, error)
+      }
+      throw error
+    }
+  }
+
+  async request(nodeId: string, payload: unknown, signal: AbortSignal): Promise<unknown> {
+    const wire = await this.wire(nodeId, signal)
+    try {
+      return await wire.request(payload, signal)
+    } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        const link = this.links.get(nodeId)
+        if (link?.wire === wire) {
+          this.end(nodeId, link, error)
+        }
       }
       throw error
     }

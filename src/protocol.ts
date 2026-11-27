@@ -200,4 +200,6 @@ export interface MeshConfig {
   peers?: MeshPeer[]
   webrtc?: WebRtcConfig
   stateDirectory?: string
+  /** 按已配对节点的网络 ID 指定对方可请求的本机项目。 */
+  managedPeerProjects?: Record<string, string[]>
 }

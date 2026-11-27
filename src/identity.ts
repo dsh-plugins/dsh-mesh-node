@@ -69,6 +69,12 @@ export class MeshIdentity {
     return sign(null, Buffer.from(data), this.key ??= localKey(this.directory)).toString('base64url')
   }
 
+  /** 配对公开已用于本配置档的签名身份。 */
+  pin(): string {
+    const key = this.ownPublic ??= createPublicKey(this.key ??= localKey(this.directory))
+    return key.export({ format: 'der', type: 'spki' }).toString('base64url')
+  }
+
   verify(nodeId: string, data: string, signature: string): boolean {
     const key = nodeId === this.nodeId
       ? this.ownPublic ??= createPublicKey(this.key ??= localKey(this.directory))

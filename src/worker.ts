@@ -37,7 +37,7 @@ class WorkerTurn {
   phase: 'running' | 'done' | 'failed' = 'running'
   sessionId?: string
 
-  constructor(readonly fingerprint: string, runner: Pick<SessionRunner, 'run'>, spec: MeshTurnSpec, text: string,
+  constructor(readonly peerId: string, readonly fingerprint: string, runner: Pick<SessionRunner, 'run'>, spec: MeshTurnSpec, text: string,
     definitions: ToolDefinition[], direct?: (args: unknown, signal: AbortSignal) => Promise<unknown>) {
     const invoke = async (name: string, args: unknown) => {
       this.controller.signal.throwIfAborted()
@@ -118,6 +118,16 @@ export class MeshWorker {
       if (this.services === services) {
         this.services = undefined
         for (const turn of this.turns.values()) turn.cancel()
+      }
+    }
+  }
+
+  revoke(peerId: string) {
+    for (const [id, turn] of this.turns) {
+      if (turn.peerId === peerId) {
+        turn.cancel()
+        // 关闭插件时仍需等待已撤权的执行结束。
+        void turn.done.then(() => { this.turns.delete(id) })
       }
     }
   }
@@ -207,14 +217,15 @@ export class MeshWorker {
     }
   }
 
-  async handle(peer: Pick<MeshPeer, 'id' | 'projects'>, input: unknown, signal?: AbortSignal): Promise<unknown> {
+  async handle(peer: Pick<MeshPeer, 'id' | 'projects'>, input: unknown, signal?: AbortSignal,
+    address = this.nodeId): Promise<unknown> {
     const data = record(input)
     const op = string(data.op)
     const services = this.services
     if (!services) throw new MeshError(503, 'Mesh worker unavailable')
     if (op === 'peer_send') {
       const message = peerMessage(data.message)
-      assertParticipants(message, peer.id, this.nodeId)
+      assertParticipants(message, peer.id, address)
       if (!services.receivePeerMessage) {
         throw new MeshError(403, 'Mesh Room receiver unavailable')
       }
@@ -223,7 +234,7 @@ export class MeshWorker {
     }
     if (op === 'peer_inbox') {
       const message = peerInboxMessage(data.message)
-      if (message.room.coordinatorNode !== this.nodeId || message.targetNodeId !== peer.id || !services.acceptPeerInbox) {
+      if (message.room.coordinatorNode !== address || message.targetNodeId !== peer.id || !services.acceptPeerInbox) {
         throw new MeshError(403, 'Mesh Room coordinator unavailable')
       }
       assertParticipants(message, message.sourceNodeId, peer.id)
@@ -239,10 +250,10 @@ export class MeshWorker {
       const shared = new Set(peer.projects)
       return (await services.queryProjects(owner, search))
         .filter(project => project.nodeId === this.nodeId && shared.has(project.id))
-        .map(project => projectMetadata(project, this.nodeId))
+        .map(project => projectMetadata({ ...project, nodeId: address }, address))
     }
     if (op === 'start') {
-      const target = parseTarget(data.target, this.nodeId)
+      const target = parseTarget(data.target, address)
       if (!peer.projects?.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')
       if (target.room && target.room.coordinatorNode !== peer.id) {
         throw new MeshError(403, 'Mesh Room coordinator must be the delegating peer')
@@ -270,7 +281,7 @@ export class MeshWorker {
       if (!current) {
         this.bind(spec, runKey)
         const invoke = services.invokePeerTool
-        this.turns.set(runKey, new WorkerTurn(fingerprint, services.runner, spec, text, definitions,
+        this.turns.set(runKey, new WorkerTurn(peer.id, fingerprint, services.runner, spec, text, definitions,
           invoke && ((args, signal) => invoke(logical, args, signal))))
       }
       return {accepted: true}
