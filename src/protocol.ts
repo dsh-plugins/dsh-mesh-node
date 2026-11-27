@@ -49,8 +49,23 @@ export function projectMetadata(raw: unknown, nodeId: string): ProjectMetadata {
   }
 }
 
-/** Workspace paths, provider options and system prompts are resolved on the device. */
-export function wireTarget(spec: MeshTurnSpec) {
+/** 跨节点执行描述，工作区路径和模型凭据由执行节点解析。 */
+export interface WireTarget {
+  bindingId: string
+  owner: string
+  parentBindingId?: string
+  layer: TurnSpec['layer']
+  projectId: string
+  nodeId: string
+  modelId: string
+  allowedTools: string[]
+  delegationCeiling?: string[]
+  room?: MeshRoom
+  depth?: number
+  maxDepth?: number
+}
+
+export function wireTarget(spec: MeshTurnSpec): WireTarget {
   return {
     bindingId: spec.bindingId, owner: spec.owner, parentBindingId: spec.parentBindingId,
     layer: spec.layer, projectId: spec.workspace.projectId, nodeId: spec.workspace.nodeId,
