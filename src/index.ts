@@ -1,4 +1,5 @@
 import type { KeyObject } from 'node:crypto'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshPath } from '@deepseek-ai/dsh-home-paths'
 import type { ProjectMetadata } from '@dsh-prism/dsh-orchestrator/contracts'
@@ -142,7 +143,9 @@ export class MeshNode {
 }
 
 export function apply(ctx: Context, config: MeshConfig) {
-  const node = new MeshNode(config)
+  const profile = ctx.get('profileContext', true) as { dir: string } | undefined
+  const stateDirectory = config.stateDirectory ?? (profile && join(profile.dir, 'data', 'dsh-prism', 'mesh'))
+  const node = new MeshNode({ ...config, stateDirectory })
   ctx.provide('dshMesh', node)
   ctx.effect(() => () => node.close(), 'prism.mesh')
 }
