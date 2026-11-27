@@ -16,11 +16,13 @@ export interface SignalingOptions {
 /** 创建独立 TLS 监听器和信令路由，调用者持有监听与关闭生命周期。 */
 export function createSignalingServer(options: SignalingOptions) {
   const keys = new Map<string, KeyObject>()
+  const pins = new Set<string>()
   for (const [id, pin] of Object.entries(options.nodes)) {
-    if (!isNodeId(id)) {
-      throw new Error('Invalid Mesh signaling node ID')
+    if (!isNodeId(id) || pins.has(pin)) {
+      throw new Error('Invalid or duplicate Mesh signaling identity')
     }
     keys.set(id, publicKey(pin))
+    pins.add(pin)
   }
   if (!keys.size) {
     throw new Error('Mesh signaling requires registered node identities')

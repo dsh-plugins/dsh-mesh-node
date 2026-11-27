@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { RTCPeerConnection } from 'werift'
 import type { RTCDataChannel, RTCIceServer, RTCIceCandidateInit } from 'werift'
 import type { MeshIdentity } from './identity.js'
@@ -153,7 +154,11 @@ export class MeshConnections {
     pc.onIceCandidate.subscribe(candidate => {
       const raw = candidate === undefined ? '' : JSON.stringify(candidate.toJSON())
       if (link.advertisementSent) {
-        this.schedule(nodeId, link, this.signal.send('candidate', nodeId, connectionId, raw, link.cancellation.signal))
+        void this.signal.send('candidate', nodeId, connectionId, raw, link.cancellation.signal).catch(() => {
+          if (!link.active) {
+            this.end(nodeId, link, new Error('Mesh ICE signaling failed'))
+          }
+        })
       } else {
         link.localCandidates.push(raw)
       }
@@ -183,6 +188,25 @@ export class MeshConnections {
     this.openChannel(nodeId, link, pc.createDataChannel(controlLabel, { ordered: true, protocol: controlLabel }))
     await pc.setLocalDescription(await pc.createOffer())
     await this.advertise(nodeId, link, 'offer')
+    await this.retryInitial(nodeId, link, 'offer', connectionId)
+  }
+
+  private async dial(nodeId: string, link: Link, connectionId: string) {
+    await this.signal.send('dial', nodeId, connectionId, '', link.cancellation.signal)
+    await this.retryInitial(nodeId, link, 'dial', connectionId)
+  }
+
+  private async retryInitial(nodeId: string, link: Link, kind: 'dial' | 'offer', connectionId: string) {
+    const signal = link.cancellation.signal
+    for (;;) {
+      await sleep(500, undefined, { signal })
+      if (kind === 'dial' ? link.pc !== undefined : link.remoteApplied) {
+        return
+      }
+      // 对端重新登录信令时可能错过首包。保持连接 ID，让已收到的对端幂等丢弃重发。
+      const sdp = kind === 'offer' ? link.pc?.localDescription?.sdp ?? '' : ''
+      await this.signal.send(kind, nodeId, connectionId, sdp, signal)
+    }
   }
 
   private async addCandidate(link: Link, raw: string) {
@@ -287,7 +311,7 @@ export class MeshConnections {
       const connectionId = randomUUID()
       this.schedule(nodeId, link, this.nodeId < nodeId
         ? this.offer(nodeId, link, connectionId)
-        : this.signal.send('dial', nodeId, connectionId, '', link.cancellation.signal))
+        : this.dial(nodeId, link, connectionId))
     }
     try {
       const wire = await until(link.ready.promise, signal)

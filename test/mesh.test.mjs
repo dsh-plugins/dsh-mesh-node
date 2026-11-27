@@ -189,3 +189,37 @@ test('worker depth ceilings hide further dispatch and are enforced on later remo
     definitions: [], invoke: async () => {},
   }), { status: 403 })
 })
+
+test('a worker reconnects after restart and an established DataChannel survives signaling shutdown', { timeout: 80_000 }, async t => {
+  const network = await meshNetwork(t, { hub: { worker: [] }, worker: { hub: ['p'] } })
+  const hub = new MeshNode(network.config('hub'))
+  network.cleanup(() => hub.close())
+  const bindings = []
+  function startWorker() {
+    const node = new MeshNode(network.config('worker'))
+    node.attach({
+      runner: {
+        async run(spec, text, _tools, _signal, ready) {
+          bindings.push(spec.bindingId)
+          ready('session-' + text)
+        },
+      },
+      authorize: spec => ({ ...spec, workspace: { ...spec.workspace, cwd: '/worker/p' } }),
+      definitionsFor: () => [],
+    })
+    network.cleanup(() => node.close())
+    return node
+  }
+  const first = startWorker()
+  const remote = hub.runnerFor('worker')
+  const ids = []
+  const run = text => remote.run(planner, text, { definitions: [], invoke: async () => {} }, undefined, id => ids.push(id))
+  await run('before-restart')
+  await first.close()
+  startWorker()
+  await run('after-restart')
+  await network.closeSignaling()
+  await run('without-signaling')
+  assert.deepEqual(ids, ['session-before-restart', 'session-after-restart', 'session-without-signaling'])
+  assert.equal(new Set(bindings).size, 1)
+})

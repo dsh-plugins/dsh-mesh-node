@@ -46,15 +46,17 @@ export async function meshNetwork(t, grants, ice = {}) {
   })
   signal.server.listen(0, '127.0.0.1')
   await once(signal.server, 'listening')
+  let stopped
+  const closeSignaling = () => stopped ??= signal.close()
   cleanup.push(async () => {
     for (const name of Object.values(privateKeys)) {
       delete process.env[name]
     }
-    await signal.close()
+    await closeSignaling()
   })
   const url = 'wss://127.0.0.1:' + signal.server.address().port + '/prism/mesh/signaling/v2'
   return {
-    env, pins, url,
+    env, pins, url, closeSignaling,
     cleanup(close) { cleanup.unshift(close) },
     config(nodeId) {
       return {
