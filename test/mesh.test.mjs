@@ -12,7 +12,8 @@ const planner = {
 }
 const worker = {...planner, layer: 'L3', bindingId: 'child', parentBindingId: 'plan', allowedTools: ['read']}
 
-async function pair(t, runner, ice) {
+async function pair(t, runner, options = {}) {
+  const { ice, ...services } = options
   const network = await meshNetwork(t, { hub: { worker: [] }, worker: { hub: ['p', 'q'] } }, ice)
   const node = new MeshNode(network.config('worker'))
   const hub = new MeshNode(network.config('hub'))
@@ -25,6 +26,7 @@ async function pair(t, runner, ice) {
       return {...spec, workspace: {...spec.workspace, cwd: '/worker/' + spec.workspace.projectId}, systemPrompt: 'worker prompt'}
     },
     definitionsFor: () => [tool],
+    ...services,
   })
   network.cleanup(() => Promise.all([node.close(), hub.close()]))
   return { runner: hub.runnerFor('worker'), hub, node }
@@ -80,4 +82,25 @@ test('cancellation aborts the remote DSH turn and waits for its cleanup', { time
   controller.abort()
   await assert.rejects(run)
   await stopped.promise
+})
+
+test('remote project indexes are restricted to the authenticated peer and public fields', { timeout: 25_000 }, async t => {
+  const listed = {
+    id:'p', nodeId:'worker', description:'Visible project', stack:['TypeScript'], permissions:['read'],
+    gitRemote:'https://owner:secret@example.com/repo.git?secret=token#branch',
+    workspace:'/private/workspaces', credentials:'private', principals:['web:user'],
+  }
+  const { hub } = await pair(t, {}, {
+    queryProjects(owner, search) {
+      assert.equal(search, 'p')
+      return owner === 'web:user' ? [
+        listed, {...listed, id:'unshared'}, {...listed, id:'q', nodeId:'someone-else'},
+      ] : []
+    },
+  })
+  assert.deepEqual(await hub.queryProjects('worker', 'web:user', 'p'), [{
+    id:'p', nodeId:'worker', description:'Visible project', stack:['TypeScript'], permissions:['read'],
+    gitRemote:'https://example.com/repo.git',
+  }])
+  assert.deepEqual(await hub.queryProjects('worker', 'someone-else', 'p'), [])
 })

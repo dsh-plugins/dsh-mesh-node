@@ -1,11 +1,12 @@
 import type { KeyObject } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { dshPath } from '@deepseek-ai/dsh-home-paths'
+import type { ProjectMetadata } from '@dsh-prism/dsh-orchestrator/contracts'
 import { MeshRunner } from './client.js'
 import { MeshConnections } from './connections.js'
 import { MeshIdentity, publicKey } from './identity.js'
 import { messages } from './messages.js'
-import { MeshError, names } from './protocol.js'
+import { MeshError, names, projectMetadata, string } from './protocol.js'
 import type { MeshConfig, MeshPeer } from './protocol.js'
 import { isNodeId } from './signaling-protocol.js'
 import { MeshWorker } from './worker.js'
@@ -73,6 +74,19 @@ export class MeshNode {
   }
 
   attach(services: WorkerServices) { return this.worker.attach(services) }
+
+  async queryProjects(nodeId: string, owner: string, search?: string, signal?: AbortSignal): Promise<ProjectMetadata[]> {
+    if (!this.peers.has(nodeId)) {
+      throw new Error(messages.unknown)
+    }
+    const rows = await this.request(nodeId, {
+      op: 'projects', owner: string(owner, 2_048), search: search?.trim() || undefined,
+    }, signal)
+    if (!Array.isArray(rows) || rows.length > 128) {
+      throw new MeshError(400, 'Invalid Mesh project index')
+    }
+    return rows.map(row => projectMetadata(row, nodeId))
+  }
 
   sign(data: string): string { return this.identity.sign(data) }
 

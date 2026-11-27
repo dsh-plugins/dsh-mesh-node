@@ -2,13 +2,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
-import type { Layer, SessionRunner, ToolDefinition, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
-import { MeshError, names, parseTarget, record, string, type MeshPeer } from './protocol.js'
+import type { Layer, ProjectMetadata, SessionRunner, ToolDefinition, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
+import { MeshError, names, parseTarget, projectMetadata, record, string, type MeshPeer } from './protocol.js'
 
 export interface WorkerServices {
   runner: Pick<SessionRunner, 'run'>
   authorize(spec: TurnSpec): TurnSpec
   definitionsFor(layer: Layer): ToolDefinition[]
+  queryProjects?(owner: string, search?: string): ProjectMetadata[] | Promise<ProjectMetadata[]>
 }
 
 function digest(parts: unknown): string {
@@ -188,6 +189,17 @@ export class MeshWorker {
     const op = string(data.op)
     const services = this.services
     if (!services) throw new MeshError(503, 'Mesh worker unavailable')
+    if (op === 'projects') {
+      const owner = string(data.owner, 2_048)
+      const search = data.search === undefined ? undefined : string(data.search, 1_024)
+      if (!services.queryProjects || !peer.projects?.length) {
+        return []
+      }
+      const shared = new Set(peer.projects)
+      return (await services.queryProjects(owner, search))
+        .filter(project => project.nodeId === this.nodeId && shared.has(project.id))
+        .map(project => projectMetadata(project, this.nodeId))
+    }
     if (op === 'start') {
       const target = parseTarget(data.target, this.nodeId)
       if (!peer.projects?.includes(target.workspace.projectId)) throw new MeshError(403, 'Project unavailable')

@@ -1,4 +1,4 @@
-import type { TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
+import type { ProjectMetadata, TurnSpec } from '@dsh-prism/dsh-orchestrator/contracts'
 
 export const maxBody = 4 * 1024 * 1024
 
@@ -21,6 +21,31 @@ export function names(value: unknown): string[] {
   const result = value.map(v => string(v, 128))
   if (new Set(result).size !== result.length) throw new MeshError(400, 'Duplicate name')
   return result
+}
+
+/** 只复制项目索引允许的字段，工作节点路径与 ACL 留在节点本地。 */
+export function projectMetadata(raw: unknown, nodeId: string): ProjectMetadata {
+  const value = record(raw)
+  if (value.nodeId !== nodeId || !Array.isArray(value.stack) || value.stack.length > 128) {
+    throw new MeshError(400, 'Invalid Mesh project metadata')
+  }
+  let gitRemote: string | undefined
+  if (value.gitRemote !== undefined) {
+    const url = URL.parse(string(value.gitRemote, 2_048))
+    if (!url?.hostname || !['https:', 'http:', 'ssh:', 'git:'].includes(url.protocol)) {
+      throw new MeshError(400, 'Invalid Mesh project repository')
+    }
+    url.username = ''
+    url.password = ''
+    url.search = ''
+    url.hash = ''
+    gitRemote = url.href
+  }
+  return {
+    nodeId, id: string(value.id, 128), description: string(value.description, 8_192),
+    stack: value.stack.map(item => string(item, 256)), permissions: names(value.permissions),
+    ...(gitRemote === undefined ? {} : { gitRemote }),
+  }
 }
 
 /** Workspace paths, provider options and system prompts are resolved on the device. */
